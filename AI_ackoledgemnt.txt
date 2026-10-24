@@ -1,3 +1,0 @@
-AI was used to extract raw data for training. AI code ran into a path error and resulted in filenotfound error. This was then fixed with Path(__file__).resolve().parent.parent 
-to ensure cross platform compatibility. 
-
