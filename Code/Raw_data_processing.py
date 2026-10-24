@@ -1,5 +1,5 @@
 """
-Data Extraction, Auditing, and Synchronization Pipeline for MMA3001 Dataset 2.
+Data extraction, auditing, and synchronization pipeline.
 
 Targets hardware identifiers ('sensorid' for environmental sensors and
 'deviceid'/'floorspaceid' for occupancy sensors), removes 136,604 frozen/cached
