@@ -5,7 +5,7 @@
 ### 1.1 Engineering Context and Problem Statement
 Heating, Ventilation, and Air Conditioning (HVAC) systems account for 40% to 50% of commercial building energy consumption. Most campus buildings operate on fixed weekday schedules, ventilating empty rooms or under-ventilating crowded spaces. While optical people-counting cameras and LiDAR sensors provide accurate occupancy headcounts, they are expensive to deploy at scale and raise privacy concerns.
 
-In contrast, Non-Dispersive Infrared (NDIR) carbon dioxide (`CO2`) sensors are inexpensive, non-intrusive, and already integrated into modern Building Management Systems (BMS). However, inferring real-time room headcount from indoor `CO2` concentration is an **ill-posed inverse problem**: indoor gas concentrations exhibit physical dispersion delays, accumulation memory, and strong sensitivity to changing HVAC air-change rates (ACH).
+In contrast, Non-Dispersive Infrared (NDIR) carbon dioxide (`CO2`) sensors are inexpensive, non-intrusive, and already integrated into modern Building Management Systems (BMS). 
 
 This project develops, verifies, and validates a physics-informed machine learning pipeline that estimates real-time zone headcount (`persons`) from synchronized 10-minute indoor `CO2` concentration, finite-difference rate-of-change (`dC/dt`), lagged gas states, and thermodynamic covariates (`temperature`, `relative humidity`, and `cyclical diurnal time`).
 

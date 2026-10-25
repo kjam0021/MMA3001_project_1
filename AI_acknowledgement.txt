@@ -54,7 +54,7 @@ sensors in the training which would have fallen outside of the engineering scope
 the code could have been quite bad. 
 
 5:
-- Claude was used to generate 50% of the project report and 80% of the README.md. 
+- Claude was used to generate 50% of the project report and 90% of the README.md. 
 -AI was used for this task as it made the report much easier to understand and conveyed my results and findings much more efficiently. 
 -I read through the project brief multiple times over and cross checked the generated number and values with the code outputs and results tables. 
 -The content of the report was written by me. A handwritten draft of the report was given to Claude to generate a polished, submission version. 
