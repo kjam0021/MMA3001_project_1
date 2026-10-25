@@ -1,11 +1,13 @@
 """
 Machine learning pipeline for virtual occupancy sensing using CO2 dynamics.
 
-This module implements training, validation, numerical verification, and
-out-of-regime failure mode analysis.
+This module implements chronological data splitting, time-lagged cross-correlation,
+finite-difference derivative estimation, regression model training, cross-validation,
+residual diagnostics, and out-of-regime failure mode analysis.
 """
 
 import os
+import re
 import timeit
 import warnings
 import numpy as np
@@ -40,9 +42,8 @@ def compute_co2_derivative(co2_series, dt_minutes=10.0, use_savgol=False,
     Estimate the physical time derivative dC/dt of CO2 concentration.
 
     Differentiates with respect to physical time spacing `dt_minutes` rather than
-    sample index.
-    Interior points use the second-order centred finite-difference stencil O(h^2),
-    while boundaries use first-order forward/backward stencils O(h).
+    sample index. Interior points use the second-order centred finite-difference
+    stencil O(h^2), while boundaries use first-order forward/backward stencils O(h).
 
     Parameters
     ----------
@@ -85,7 +86,6 @@ def compute_co2_derivative(co2_series, dt_minutes=10.0, use_savgol=False,
         return savgol_filter(arr, window_length=window_length, polyorder=polyorder,
                              deriv=1, delta=float(dt_minutes))
 
-    # Use physical coordinate spacing rather than sample index.
     return np.gradient(arr, float(dt_minutes))
 
 
@@ -214,6 +214,7 @@ def load_and_split_sensor_869(csv_path):
     time_col = "timestamp_melbourne" if "timestamp_melbourne" in df.columns else df.columns[0]
     df[time_col] = pd.to_datetime(df[time_col], utc=True).dt.tz_convert("Australia/Melbourne")
     df = df.sort_values(time_col).reset_index(drop=True)
+    df["timestamp_melbourne"] = df[time_col]
 
     # Filter active primary sensor window: co2_sensor_869
     if "co2_sensor_869" in df.columns:
@@ -235,8 +236,12 @@ def load_and_split_sensor_869(csv_path):
     for sub_df in (df_869, df_326):
         if len(sub_df) < 5:
             continue
-        sub_df["dcdt_raw"] = compute_co2_derivative(sub_df["co2_active"].values, dt_minutes=10.0, use_savgol=False)
-        sub_df["dcdt_savgol"] = compute_co2_derivative(sub_df["co2_active"].values, dt_minutes=10.0, use_savgol=True)
+        sub_df["dcdt_raw"] = compute_co2_derivative(
+            sub_df["co2_active"].values, dt_minutes=10.0, use_savgol=False
+        )
+        sub_df["dcdt_savgol"] = compute_co2_derivative(
+            sub_df["co2_active"].values, dt_minutes=10.0, use_savgol=True
+        )
         sub_df["co2_lag1"] = sub_df["co2_active"].shift(1).bfill()
         sub_df["co2_lag2"] = sub_df["co2_active"].shift(2).bfill()
 
@@ -249,7 +254,7 @@ def load_and_split_sensor_869(csv_path):
         if "humidity_rh" not in sub_df.columns:
             sub_df["humidity_rh"] = 50.0
 
-    # Strict chronological split at Melbourne midnight.
+    # Strict chronological split at Melbourne midnight
     cal_dates = df_869[time_col].dt.date
     train_end = pd.to_datetime("2024-05-12").date()
     val_end = pd.to_datetime("2024-05-28").date()
@@ -265,13 +270,12 @@ def load_and_split_sensor_869(csv_path):
 # 3. REGRESSION METRICS & OPERATING-REGION DIAGNOSTICS
 # ==============================================================================
 
-def evaluate_mma3001_regression(y_true, y_pred):
+def evaluate_regression_metrics(y_true, y_pred):
     """
-    Calculate regression metrics and operating-region checks.
+    Calculate regression performance metrics and operating-region checks.
 
-    Computes global MAE, RMSE, and R2, plus localized MAE across important
-    engineering operating regions (Unoccupied N=0 vs Occupied N>0) as taught
-    to avoid metric cherry-picking.
+    Computes global MAE, RMSE, and R2, plus localized MAE across distinct
+    operating regions (Unoccupied N=0 vs Occupied N>0).
 
     Parameters
     ----------
@@ -284,7 +288,7 @@ def evaluate_mma3001_regression(y_true, y_pred):
     -------
     metrics : dict
         Dictionary containing MAE_persons, RMSE_persons, R2,
-        MAE_Unoccupied_persons, and MAE_Occupied_persons.
+        MAE_Empty, and MAE_Occupied.
     """
     y_t = np.asarray(y_true, dtype=np.float64)
     y_p = apply_physical_clipping(y_pred)
@@ -294,7 +298,6 @@ def evaluate_mma3001_regression(y_true, y_pred):
     rmse_all = np.sqrt(mse)
     r2_all = r2_score(y_t, y_p)
 
-    # Operating-region checks (Empty vs Occupied regime).
     empty_mask = (y_t == 0)
     occ_mask = (y_t > 0)
 
@@ -310,17 +313,21 @@ def evaluate_mma3001_regression(y_true, y_pred):
     }
 
 
+# Keep alias for backwards compatibility with existing imports
+evaluate_mma3001_regression = evaluate_regression_metrics
+
+
 # ==============================================================================
 # 4. EMPIRICAL TIMING & ARITHMETIC INTENSITY BENCHMARK
 # ==============================================================================
 
 def benchmark_numerical_performance(co2_array, n_runs=20):
     """
-    Benchmark execution time and estimate FLOPS / Arithmetic Intensity.
+    Benchmark execution time and estimate FLOPS and Arithmetic Intensity.
 
-    Compares a naive Python loop centred-difference implementation against
+    Compares a Python loop centred-difference implementation against
     vectorized `numpy.gradient` using `timeit.repeat` averaged across multiple
-    runs to account for OS background variation.
+    runs to account for background operating system variation.
 
     Parameters
     ----------
@@ -358,12 +365,11 @@ def benchmark_numerical_performance(co2_array, n_runs=20):
     vec_ms = (np.mean(vec_times) / n_runs) * 1000.0
     vec_std_ms = (np.std(vec_times) / n_runs) * 1000.0
 
-    # Estimate FLOPS and byte traffic for the centred finite difference.
     # Each interior point performs 1 subtraction + 1 division = 2 FLOPs
-    # Memory traffic: reads 2 float64s and writes 1 float64 (with cache reuse ~ 16 bytes/pt)
+    # Memory traffic: 1 float64 read + 1 float64 write streamed per element (16 bytes/pt)
     total_flops = 2.0 * n_pts
-    total_bytes = 2.0 * 8.0 * n_pts  # 1 read + 1 write per element streamed from RAM
-    arithmetic_intensity = total_flops / total_bytes  # FLOPs / Byte
+    total_bytes = 2.0 * 8.0 * n_pts
+    arithmetic_intensity = total_flops / total_bytes
     achieved_mflops = (total_flops / (vec_ms / 1000.0)) / 1e6
 
     return {
@@ -379,20 +385,236 @@ def benchmark_numerical_performance(co2_array, n_runs=20):
 
 
 # ==============================================================================
-# 5. MAIN PIPELINE EXECUTION (STEPS 1 TO 4)
+# 5. PLOTTING HELPER FUNCTIONS
+# ==============================================================================
+
+def _slugify(text):
+    """Convert a model name into a clean filename slug."""
+    slug = re.sub(r"[^a-zA-Z0-9]+", "_", text.lower()).strip("_")
+    return slug
+
+
+def save_individual_model_plot(model_name, timestamps, y_true, y_pred, metrics_dict, output_dir):
+    """
+    Save a 3-panel diagnostic figure for a single regression method.
+
+    Panel 1: Predicted vs Observed scatter with 1:1 identity line.
+    Panel 2: Residuals (Observed - Predicted) vs Predicted values.
+    Panel 3: Time-series tracking over a representative 5-day window of the test set.
+    """
+    y_t = np.asarray(y_true, dtype=np.float64)
+    y_p = np.asarray(y_pred, dtype=np.float64)
+    residuals = y_t - y_p
+
+    fig = plt.figure(figsize=(14, 8.5))
+    gs = fig.add_gridspec(2, 2, height_ratios=[1.0, 1.05])
+
+    ax_parity = fig.add_subplot(gs[0, 0])
+    ax_resid = fig.add_subplot(gs[0, 1])
+    ax_ts = fig.add_subplot(gs[1, :])
+
+    # Panel 1: Predicted vs Observed
+    max_val = max(float(np.max(y_t)), float(np.max(y_p)), 1.0)
+    ax_parity.scatter(y_t, y_p, alpha=0.35, s=18, color="tab:blue", label="Test samples")
+    ax_parity.plot([0, max_val], [0, max_val], "k--", linewidth=1.5, label="Ideal 1:1 line")
+    ax_parity.set_xlabel("Observed Headcount [persons]")
+    ax_parity.set_ylabel("Predicted Headcount [persons]")
+    ax_parity.set_title(
+        f"Predicted vs Observed\n"
+        f"(MAE={metrics_dict['MAE_persons']:.2f}, RMSE={metrics_dict['RMSE_persons']:.2f}, R$^2$={metrics_dict['R2']:.3f})"
+    )
+    ax_parity.legend(loc="upper left")
+    ax_parity.grid(True, alpha=0.3)
+
+    # Panel 2: Residual vs Predicted
+    ax_resid.scatter(y_p, residuals, alpha=0.35, s=18, color="tab:orange")
+    ax_resid.axhline(0.0, color="black", linestyle="--", linewidth=1.5)
+    ax_resid.set_xlabel("Predicted Headcount [persons]")
+    ax_resid.set_ylabel(r"Residual $e = y - \hat{y}$ [persons]")
+    ax_resid.set_title(
+        f"Residuals vs Predicted\n"
+        f"(Empty MAE={metrics_dict['MAE_Empty']:.2f}, Occupied MAE={metrics_dict['MAE_Occupied']:.2f})"
+    )
+    ax_resid.grid(True, alpha=0.3)
+
+    # Panel 3: Time-Series Window (first 5 days = 720 bins of 10-min intervals)
+    n_window = min(len(y_t), 720)
+    t_win = timestamps.iloc[:n_window]
+    ax_ts.plot(t_win, y_t[:n_window], color="black", linewidth=1.8, label="Observed Headcount")
+    ax_ts.plot(t_win, y_p[:n_window], color="tab:red", linestyle="--", linewidth=1.6, label=f"Predicted ({model_name})")
+    ax_ts.fill_between(t_win, y_t[:n_window], y_p[:n_window], color="tab:red", alpha=0.15, label="Prediction Error")
+    ax_ts.set_xlabel("Melbourne Local Time")
+    ax_ts.set_ylabel("Headcount [persons]")
+    ax_ts.set_title("Test Set Time-Series Tracking (5-Day Window)")
+    ax_ts.legend(loc="upper right")
+    ax_ts.grid(True, alpha=0.3)
+
+    fig.suptitle(f"Regression Diagnostic Report: {model_name}", fontsize=13, fontweight="bold")
+    fig.tight_layout()
+
+    fname = f"individual_{_slugify(model_name)}.png"
+    plt.savefig(os.path.join(output_dir, fname), dpi=300)
+    plt.close(fig)
+
+
+def save_combined_comparison_plots(test_df, target_col, trained_pipelines, results_df, cv_fold_records, output_dir):
+    """
+    Save combined multi-model comparison plots onto shared figures.
+
+    Generates:
+    1. `fig2_all_models_timeseries_overlay.png`: All regression methods plotted on
+       a single time-series figure against observed occupancy.
+    2. `fig3_all_models_parity_grid.png`: Multi-panel subplot grid of Predicted vs
+       Observed for all regression methods on shared axes.
+    3. `fig4_model_metrics_comparison_bars.png`: Bar chart comparing Validation and
+       Test MAE, RMSE, and R2 across all regression methods.
+    4. `fig5_cross_validation_fold_boxplots.png`: Boxplot of 5-fold cross-validation
+       RMSE across all regression methods.
+    """
+    timestamps = test_df["timestamp_melbourne"]
+    y_test = test_df[target_col].values
+
+    # ------------------------------------------------------------------
+    # Plot A: All regression methods overlaid on one time-series plot
+    # ------------------------------------------------------------------
+    n_win = min(len(y_test), 576)  # 4-day detailed window for visual clarity
+    t_win = timestamps.iloc[:n_win]
+
+    fig, ax = plt.subplots(figsize=(14, 6))
+    ax.plot(t_win, y_test[:n_win], color="black", linewidth=2.4, label="Observed Headcount (Ground Truth)", zorder=5)
+
+    cmap = plt.get_cmap("tab10")
+    for idx, (name, (_, _, _, test_pred)) in enumerate(trained_pipelines.items()):
+        line_style = ":" if "Baseline" in name else "-"
+        alpha_val = 0.65 if "Baseline" in name else 0.85
+        ax.plot(
+            t_win,
+            test_pred[:n_win],
+            linestyle=line_style,
+            linewidth=1.5,
+            color=cmap(idx % 10),
+            alpha=alpha_val,
+            label=name,
+        )
+
+    ax.set_xlabel("Melbourne Local Time")
+    ax.set_ylabel("Occupancy Headcount [persons]")
+    ax.set_title("Comparison of All Regression Methods on Test Set Time Series")
+    ax.legend(loc="upper right", ncol=2, fontsize=9)
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    plt.savefig(os.path.join(output_dir, "fig2_all_models_timeseries_overlay.png"), dpi=300)
+    plt.close(fig)
+
+    # ------------------------------------------------------------------
+    # Plot B: All models Predicted vs Observed on one multi-panel grid
+    # ------------------------------------------------------------------
+    n_models = len(trained_pipelines)
+    n_cols = 4
+    n_rows = int(np.ceil(n_models / n_cols))
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(16, 4.2 * n_rows), sharex=True, sharey=True)
+    axes_flat = np.atleast_1d(axes).flatten()
+
+    max_lim = max(float(np.max(y_test)), 1.0)
+    for idx, (name, (_, _, _, test_pred)) in enumerate(trained_pipelines.items()):
+        ax_i = axes_flat[idx]
+        r2_val = r2_score(y_test, test_pred)
+        rmse_val = np.sqrt(mean_squared_error(y_test, test_pred))
+        ax_i.scatter(y_test, test_pred, alpha=0.3, s=14, color=cmap(idx % 10))
+        ax_i.plot([0, max_lim], [0, max_lim], "k--", linewidth=1.2)
+        ax_i.set_title(f"{name}\nRMSE={rmse_val:.2f} | R$^2$={r2_val:.3f}", fontsize=9.5)
+        ax_i.grid(True, alpha=0.3)
+        if idx % n_cols == 0:
+            ax_i.set_ylabel("Predicted [persons]")
+        if idx >= (n_rows - 1) * n_cols:
+            ax_i.set_xlabel("Observed [persons]")
+
+    for extra_ax in axes_flat[n_models:]:
+        extra_ax.set_visible(False)
+
+    fig.suptitle("Predicted vs Observed Headcount Across All Regression Methods (Test Set)", fontsize=13, fontweight="bold")
+    fig.tight_layout()
+    plt.savefig(os.path.join(output_dir, "fig3_all_models_parity_grid.png"), dpi=300)
+    plt.close(fig)
+
+    # ------------------------------------------------------------------
+    # Plot C: Bar chart comparison of MAE, RMSE, and R2 across all models
+    # ------------------------------------------------------------------
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5.2))
+    x = np.arange(len(results_df))
+    width = 0.36
+    short_labels = [m.split(": ")[-1] if ": " in m else m for m in results_df["Model"]]
+
+    axes[0].bar(x - width / 2, results_df["Test_MAE"], width, label="Test MAE [persons]", color="tab:blue")
+    axes[0].bar(x + width / 2, results_df["Test_RMSE"], width, label="Test RMSE [persons]", color="tab:orange")
+    axes[0].set_xticks(x)
+    axes[0].set_xticklabels(short_labels, rotation=28, ha="right")
+    axes[0].set_ylabel("Prediction Error [persons]")
+    axes[0].set_title("Test MAE and RMSE by Regression Method")
+    axes[0].legend()
+    axes[0].grid(True, axis="y", alpha=0.3)
+
+    axes[1].bar(x - width / 2, results_df["Val_R2"], width, label="Validation $R^2$", color="tab:green", alpha=0.75)
+    axes[1].bar(x + width / 2, results_df["Test_R2"], width, label="Test $R^2$", color="tab:purple", alpha=0.9)
+    axes[1].axhline(0.0, color="black", linewidth=1.0, linestyle="--")
+    axes[1].set_xticks(x)
+    axes[1].set_xticklabels(short_labels, rotation=28, ha="right")
+    axes[1].set_ylabel("Explained Variance ($R^2$)")
+    axes[1].set_title("Validation and Test $R^2$ Comparison")
+    axes[1].legend()
+    axes[1].grid(True, axis="y", alpha=0.3)
+
+    fig.tight_layout()
+    plt.savefig(os.path.join(output_dir, "fig4_model_metrics_comparison_bars.png"), dpi=300)
+    plt.close(fig)
+
+    # ------------------------------------------------------------------
+    # Plot D: Cross-validation fold variation boxplot
+    # ------------------------------------------------------------------
+    fig, ax = plt.subplots(figsize=(10, 5))
+    box_data = [cv_fold_records[m] for m in results_df["Model"]]
+    ax.boxplot(box_data, tick_labels=short_labels, showmeans=True)
+
+    for pos, m_name in enumerate(results_df["Model"], start=1):
+        fold_vals = cv_fold_records[m_name]
+        ax.scatter(
+            np.full(len(fold_vals), pos),
+            fold_vals,
+            color="tab:blue",
+            edgecolor="white",
+            s=45,
+            zorder=3,
+            label="Individual fold RMSE" if pos == 1 else None,
+        )
+
+    ax.set_ylabel("Cross-Validation RMSE [persons]")
+    ax.set_title("5-Fold Time-Series Cross-Validation RMSE Variation")
+    ax.tick_params(axis="x", rotation=25)
+    ax.grid(True, axis="y", alpha=0.3)
+    ax.legend(loc="upper right")
+    fig.tight_layout()
+    plt.savefig(os.path.join(output_dir, "fig5_cross_validation_fold_boxplots.png"), dpi=300)
+    plt.close(fig)
+
+
+# ==============================================================================
+# 6. MAIN PIPELINE EXECUTION
 # ==============================================================================
 
 def run_pipeline(csv_path="Parsed_Data/synchronized_co2_occupancy_10min.csv", output_dir="Figures"):
     """
-    Execute the complete training, validation, and testing workflow.
+    Execute the complete training, validation, testing, and plotting workflow.
 
     Parameters
     ----------
     csv_path : str
         Path to synchronized dataset CSV.
     output_dir : str
-        Directory to save publication-ready diagnostic plots.
+        Directory to save diagnostic and comparison figures.
     """
+    if not os.path.exists(csv_path) and os.path.exists("synchronized_co2_occupancy_10min.csv"):
+        csv_path = "synchronized_co2_occupancy_10min.csv"
+
     os.makedirs(output_dir, exist_ok=True)
     train_df, val_df, test_df, df_326 = load_and_split_sensor_869(csv_path)
 
@@ -425,14 +647,14 @@ def run_pipeline(csv_path="Parsed_Data/synchronized_co2_occupancy_10min.csv", ou
     print(f"Instantaneous Pearson r(tau=0 min)     : {r_co2[lags_min == 0][0]:.4f}")
     print(f"Optimal Physical Dispersion Lag tau*   : +{optimal_lag_min} minutes (Peak r = {peak_r:.4f})")
 
-    fig, ax = plt.subplots(figsize=(8, 4.5))
+    fig, ax = plt.subplots(figsize=(8.5, 4.8))
     ax.plot(lags_min, r_co2, "o-", label=r"CO$_2$ Concentration $C(t+\tau)$", linewidth=2)
     ax.plot(lags_min, r_dcdt, "s--", label=r"Smoothed Derivative $dC/dt$ (Savitzky-Golay)", linewidth=1.8)
     ax.axvline(optimal_lag_min, color="red", linestyle=":", label=f"Peak Lag $\\tau^* = {optimal_lag_min}$ min ($r={peak_r:.3f}$)")
     ax.axvline(0, color="black", linewidth=0.8)
     ax.set_xlabel(r"Time Lag $\tau$ (minutes) [Positive = CO$_2$ lags Occupancy]")
     ax.set_ylabel("Pearson Correlation $R(\\tau)$")
-    ax.set_title("MMA3001 Step 2: Time-Lagged Cross-Correlation on Training Set")
+    ax.set_title("Time-Lagged Cross-Correlation on Training Set")
     ax.legend()
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
@@ -440,53 +662,52 @@ def run_pipeline(csv_path="Parsed_Data/synchronized_co2_occupancy_10min.csv", ou
     plt.close(fig)
 
     # --------------------------------------------------------------------------
-    # STEP 3: TRAIN & COMPARE MODELS
+    # STEP 3: TRAIN, EVALUATE & PLOT ALL REGRESSION METHODS
     # --------------------------------------------------------------------------
     f_univariate = ["co2_active"]
     f_ode_mass = ["co2_active", "dcdt_savgol"]
     f_multivar = ["co2_active", "co2_lag1", "co2_lag2", "dcdt_savgol", "sin_time", "cos_time", "temp_c", "humidity_rh"]
 
-    # Compare baseline, linear, regularized, tree-based, kernel, and neural models.
     candidate_models = {
-        "0. Baseline: DummyRegressor (Mean)": (
+        "0. Baseline: Mean DummyRegressor": (
             f_univariate,
             DummyRegressor(strategy="mean")
         ),
-        "1. Linear Regression: Static OLS (5.1)": (
+        "1. Linear Regression: Static OLS": (
             f_univariate,
             Pipeline([("imputer", SimpleImputer(strategy="median")), ("ols", LinearRegression())])
         ),
-        "2. Physical ODE Mass-Balance OLS (7.2 & 5.1)": (
+        "2. Physical Mass-Balance ODE OLS": (
             f_ode_mass,
             Pipeline([("imputer", SimpleImputer(strategy="median")), ("ode_ols", LinearRegression())])
         ),
-        "3. Regularized Ridge Regression (3.6 & 5.1)": (
+        "3. Regularized Ridge Regression": (
             f_multivar,
             Pipeline([("imputer", SimpleImputer(strategy="median")), ("scaler", StandardScaler()), ("ridge", Ridge(alpha=10.0))])
         ),
-        "4. Decision Tree Regressor (5.2)": (
+        "4. Decision Tree Regressor": (
             f_multivar,
             Pipeline([("imputer", SimpleImputer(strategy="median")),
                       ("tree", DecisionTreeRegressor(max_depth=5, min_samples_leaf=20, random_state=42))])
         ),
-        "5. Support Vector Regression RBF (5.3)": (
+        "5. Support Vector Regression (RBF)": (
             f_multivar,
             Pipeline([("imputer", SimpleImputer(strategy="median")), ("scaler", StandardScaler()),
                       ("svr", SVR(kernel="rbf", C=10.0, epsilon=1.0, gamma="scale"))])
         ),
-        "6. Neural Network MLPRegressor (5.4)": (
+        "6. Neural Network (MLPRegressor)": (
             f_multivar,
             Pipeline([("imputer", SimpleImputer(strategy="median")), ("scaler", StandardScaler()),
                       ("mlp", MLPRegressor(hidden_layer_sizes=(32, 16), alpha=1e-2, max_iter=500, random_state=42))])
         ),
     }
 
-    # 5-fold TimeSeriesSplit cross-validation on Train + Val.
     train_val_df = pd.concat([train_df, val_df], ignore_index=True)
     tscv = TimeSeriesSplit(n_splits=5, gap=6)  # 6 bins = 1-hour purge buffer
 
     results_rows = []
     trained_pipelines = {}
+    cv_fold_records = {}
 
     y_train = train_df[target_col].values
     y_val = val_df[target_col].values
@@ -497,7 +718,6 @@ def run_pipeline(csv_path="Parsed_Data/synchronized_co2_occupancy_10min.csv", ou
         X_va = val_df[feat_cols].values
         X_te = test_df[feat_cols].values
 
-        # Time model fitting and prediction using timeit.
         t0 = timeit.default_timer()
         model = clone(pipeline)
         model.fit(X_tr, y_train)
@@ -510,7 +730,7 @@ def run_pipeline(csv_path="Parsed_Data/synchronized_co2_occupancy_10min.csv", ou
         test_pred = apply_physical_clipping(model.predict(X_te))
         trained_pipelines[name] = (feat_cols, model, val_pred, test_pred)
 
-        # TimeSeriesSplit CV RMSE
+        # 5-fold TimeSeriesSplit CV
         cv_rmses = []
         X_tv = train_val_df[feat_cols].values
         y_tv = train_val_df[target_col].values
@@ -519,9 +739,20 @@ def run_pipeline(csv_path="Parsed_Data/synchronized_co2_occupancy_10min.csv", ou
             cv_m.fit(X_tv[tr_idx], y_tv[tr_idx])
             cv_p = apply_physical_clipping(cv_m.predict(X_tv[va_idx]))
             cv_rmses.append(np.sqrt(mean_squared_error(y_tv[va_idx], cv_p)))
+        cv_fold_records[name] = cv_rmses
 
-        val_metrics = evaluate_mma3001_regression(y_val, val_pred)
-        test_metrics = evaluate_mma3001_regression(y_test, test_pred)
+        val_metrics = evaluate_regression_metrics(y_val, val_pred)
+        test_metrics = evaluate_regression_metrics(y_test, test_pred)
+
+        # Save dedicated diagnostic figure for this individual regression method
+        save_individual_model_plot(
+            model_name=name,
+            timestamps=test_df["timestamp_melbourne"],
+            y_true=y_test,
+            y_pred=test_pred,
+            metrics_dict=test_metrics,
+            output_dir=output_dir,
+        )
 
         results_rows.append({
             "Model": name,
@@ -544,30 +775,15 @@ def run_pipeline(csv_path="Parsed_Data/synchronized_co2_occupancy_10min.csv", ou
     print("=" * 78)
     print(results_df.to_string(index=False))
 
-    # Residual diagnostics plot.
-    best_model_name = "5. Support Vector Regression RBF (5.3)"
-    _, best_model, _, best_test_pred = trained_pipelines[best_model_name]
-    residuals = y_test - best_test_pred
-
-    fig, axes = plt.subplots(1, 2, figsize=(11, 4.5))
-    axes[0].scatter(y_test, best_test_pred, alpha=0.35, s=15)
-    max_v = max(np.max(y_test), np.max(best_test_pred))
-    axes[0].plot([0, max_v], [0, max_v], "r--", label="Ideal 1:1 Prediction")
-    axes[0].set_xlabel("Measured Headcount $y$ (persons)")
-    axes[0].set_ylabel(r"Predicted Headcount $\hat{y}$ (persons)")
-    axes[0].set_title(f"Prediction vs Measured ({best_model_name})")
-    axes[0].legend()
-    axes[0].grid(True, alpha=0.3)
-
-    axes[1].scatter(best_test_pred, residuals, alpha=0.35, s=15, color="darkorange")
-    axes[1].axhline(0.0, color="black", linestyle="--")
-    axes[1].set_xlabel(r"Predicted Headcount $\hat{y}$ (persons)")
-    axes[1].set_ylabel(r"Residual $e = y - \hat{y}$ (persons)")
-    axes[1].set_title("Residual Diagnostics Plot (Test Set)")
-    axes[1].grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, "fig2_week5_residual_diagnostics.png"), dpi=300)
-    plt.close(fig)
+    # Save combined multi-model overlay, parity grid, metric bars, and CV boxplots
+    save_combined_comparison_plots(
+        test_df=test_df,
+        target_col=target_col,
+        trained_pipelines=trained_pipelines,
+        results_df=results_df,
+        cv_fold_records=cv_fold_records,
+        output_dir=output_dir,
+    )
 
     # --------------------------------------------------------------------------
     # STEP 4: OUT-OF-REGIME FAILURE MODE ANALYSIS ON SENSOR 326
@@ -582,22 +798,56 @@ def run_pipeline(csv_path="Parsed_Data/synchronized_co2_occupancy_10min.csv", ou
         print(f"Sensor 326 Physical Correlation r(CO2, Occupancy): {r_326:.4f} (Inverted by HVAC dilution)")
 
         failure_rows = []
-        for name in ["1. Linear Regression: Static OLS (5.1)",
-                     "2. Physical ODE Mass-Balance OLS (7.2 & 5.1)",
-                     "4. Decision Tree Regressor (5.2)",
-                     "5. Support Vector Regression RBF (5.3)"]:
+        fig_fail, axes_fail = plt.subplots(1, 2, figsize=(13, 5))
+
+        # Left subplot: Physical regime shift scatter comparison (Sensor 869 vs Sensor 326)
+        axes_fail[0].scatter(
+            train_df["co2_active"], train_df[target_col],
+            alpha=0.25, s=15, color="tab:blue", label="Sensor 869 (Training Regime)"
+        )
+        axes_fail[0].scatter(
+            df_326_eval["co2_active"], y_326,
+            alpha=0.25, s=15, color="tab:red", label=f"Sensor 326 (Out-of-Regime, r={r_326:.3f})"
+        )
+        axes_fail[0].set_xlabel(r"CO$_2$ Concentration [ppm]")
+        axes_fail[0].set_ylabel("Observed Headcount [persons]")
+        axes_fail[0].set_title("Physical Domain Shift: Sensor 869 vs Sensor 326")
+        axes_fail[0].legend()
+        axes_fail[0].grid(True, alpha=0.3)
+
+        # Right subplot: Time-series failure on Sensor 326
+        n_fail_win = min(len(df_326_eval), 500)
+        t_326 = df_326_eval["timestamp_melbourne"].iloc[:n_fail_win]
+        axes_fail[1].plot(t_326, y_326[:n_fail_win], color="black", linewidth=2, label="Observed Headcount (Sensor 326)")
+
+        for name in ["1. Linear Regression: Static OLS",
+                     "2. Physical Mass-Balance ODE OLS",
+                     "4. Decision Tree Regressor",
+                     "5. Support Vector Regression (RBF)"]:
             f_cols, fitted_mod, _, _ = trained_pipelines[name]
             pred_326 = apply_physical_clipping(fitted_mod.predict(df_326_eval[f_cols].values))
-            m_326 = evaluate_mma3001_regression(y_326, pred_326)
+            m_326 = evaluate_regression_metrics(y_326, pred_326)
             failure_rows.append({
                 "Model": name,
                 "Sensor326_MAE": m_326["MAE_persons"],
                 "Sensor326_RMSE": m_326["RMSE_persons"],
                 "Sensor326_R2": m_326["R2"],
             })
+            axes_fail[1].plot(t_326, pred_326[:n_fail_win], linestyle="--", linewidth=1.4, label=name)
+
+        axes_fail[1].set_xlabel("Melbourne Local Time")
+        axes_fail[1].set_ylabel("Headcount [persons]")
+        axes_fail[1].set_title("Out-of-Regime Prediction Failure on Sensor 326")
+        axes_fail[1].legend(loc="upper right", fontsize=8.5)
+        axes_fail[1].grid(True, alpha=0.3)
+
+        fig_fail.tight_layout()
+        plt.savefig(os.path.join(output_dir, "fig6_out_of_regime_sensor326_failure.png"), dpi=300)
+        plt.close(fig_fail)
+
         print(pd.DataFrame(failure_rows).to_string(index=False))
-        print("-> Note: Negative R2 (< 0) proves predictions on uncalibrated HVAC regimes")
-        print("   perform worse than predicting the mean (violating the Prediction Contract).")
+        print("-> Note: Negative R2 (< 0) demonstrates that models applied across uncalibrated")
+        print("   HVAC ventilation regimes perform worse than predicting the mean.")
 
     # --------------------------------------------------------------------------
     # STEP 5: TIMING & ARITHMETIC INTENSITY BENCHMARK
@@ -608,6 +858,8 @@ def run_pipeline(csv_path="Parsed_Data/synchronized_co2_occupancy_10min.csv", ou
     perf_stats = benchmark_numerical_performance(train_df["co2_active"].values)
     for k, v in perf_stats.items():
         print(f"{k:38s}: {v:.4f}" if isinstance(v, float) else f"{k:38s}: {v}")
+
+    print(f"\nAll individual and combined figures successfully saved to '{output_dir}/'.")
 
 
 if __name__ == "__main__":
