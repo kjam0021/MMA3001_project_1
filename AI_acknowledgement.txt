@@ -52,3 +52,11 @@ that the code was functional.
 sensors in the training which would have fallen outside of the engineering scope of this project. 
 -This use highlighted just how important double checking AI outputs really is as if this was a real engineering project with real stakes, not double checking the original outputs 
 the code could have been quite bad. 
+
+5:
+- Claude was used to generate 50% of the project report. 
+-AI was used for this task as it made the report much easier to understand and conveyed my results and findings much more efficiently. 
+-I read through the project brief multiple times over and cross checked the generated number and values with the code outputs and results tables. 
+-The content of the report was written by me. A handwritten draft of the report was given to Claude to generate a polished, submission version. 
+-As Claude does not have full unlimited context, it generated some hallucinated points and data that I did not write in the draft report which had to be deleted. For example, it had added sections regarding different regression models that it deemed to be better than the ones that I had used. 
+-This use of AI really made it much easier to convey my thoughts as the AI paragraphs had projected my intentions much better grammatically. 
