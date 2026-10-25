@@ -1,0 +1,4 @@
+python 3.14.4 | numpy 2.5.3 | pandas 3.1.0 | scikit-learn 1.9.1
+machine: Windows-11-10.0.26200-SP0 | processor: Intel64 Family 6 Model 167 Stepping 1, GenuineIntel
+causal_features=True | selected model (lowest CV RMSE): 5. Support Vector Regression (RBF)
+observed order centred: [1.9994, 1.9999] | causal: [1.9988, 1.9997]

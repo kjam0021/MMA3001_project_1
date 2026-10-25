@@ -1,19 +1,26 @@
 """
 Automated Pytest verification suite for the virtual occupancy sensing pipeline.
 
-Tests positive and negative cases, numerical derivative accuracy and convergence,
-physical non-negativity clipping, time-lagged cross-correlation, and regression
-evaluation metrics.
+Tests positive and negative cases, numerical derivative accuracy and convergence
+(centred and causal stencils), causality of the deployable features, physical
+non-negativity clipping, time-lagged cross-correlation, regression evaluation
+metrics, the CO2-threshold engineering baseline, and grouped permutation importance.
 """
 
 import numpy as np
 import pytest
 
+from sklearn.linear_model import LinearRegression
+
 from Code.Model_training_and_validation import (
     compute_co2_derivative,
+    compute_causal_co2_derivative,
+    observed_convergence_order,
     apply_physical_clipping,
     compute_lagged_correlations,
     evaluate_regression_metrics,
+    CO2ThresholdRule,
+    grouped_permutation_importance,
 )
 
 
@@ -151,6 +158,89 @@ def test_positive_r2_perfect_prediction():
     assert m["R2"] == pytest.approx(1.0)
 
 
+def test_positive_causal_derivative_second_order_convergence():
+    """
+    Positive Test: The causal (backward) stencil is also second-order accurate:
+    p_obs = log(E1/E2)/log(h1/h2) ~ 2.0 on sin(omega*t) when h is halved twice.
+    """
+    p_obs = observed_convergence_order("causal", h_values=(2.0, 1.0, 0.5))
+    assert p_obs == pytest.approx(2.0, rel=5e-2)
+
+
+def test_positive_causal_savgol_exact_on_quadratic():
+    """
+    Positive Test: A trailing Savitzky-Golay filter with polyorder=2 differentiates a
+    quadratic C(t) = 3 + 2t + 0.05 t^2 exactly once a full window of history exists.
+    """
+    t = np.arange(0.0, 100.0, 10.0)
+    c = 3.0 + 2.0 * t + 0.05 * t ** 2
+    d = compute_causal_co2_derivative(c, dt_minutes=10.0, use_savgol=True,
+                                      window_length=5, polyorder=2)
+    assert d[4:] == pytest.approx((2.0 + 0.1 * t)[4:], rel=1e-9)
+
+
+def test_positive_causal_derivative_ignores_future_samples():
+    """
+    Positive Test (leakage guard): changing samples at index >= k must not change
+    the causal derivative at indices < k, for both stencil variants. The centred
+    Savitzky-Golay filter fails this property, which is why it cannot be a deployed feature.
+    """
+    rng = np.random.default_rng(0)
+    c = rng.normal(500.0, 50.0, 60)
+    c_future_changed = c.copy()
+    c_future_changed[40:] += 1000.0
+    for use_savgol in (False, True):
+        a = compute_causal_co2_derivative(c, 10.0, use_savgol=use_savgol)
+        b = compute_causal_co2_derivative(c_future_changed, 10.0, use_savgol=use_savgol)
+        assert np.array_equal(a[:40], b[:40])
+    leaky_a = compute_co2_derivative(c, 10.0, use_savgol=True)
+    leaky_b = compute_co2_derivative(c_future_changed, 10.0, use_savgol=True)
+    assert not np.array_equal(leaky_a[:40], leaky_b[:40])
+
+
+def test_positive_threshold_rule_known_values():
+    """
+    Positive Test: With threshold 600 ppm the rule predicts 0 below it and the mean
+    training headcount of the above-threshold samples (15 persons) above it.
+    """
+    x = np.array([[400.0], [500.0], [700.0], [900.0]])
+    y = np.array([0.0, 0.0, 10.0, 20.0])
+    rule = CO2ThresholdRule(threshold_ppm=600.0).fit(x, y)
+    assert rule.occupied_level_ == pytest.approx(15.0)
+    assert rule.predict(x) == pytest.approx([0.0, 0.0, 15.0, 15.0])
+
+
+def test_positive_tuned_threshold_recovers_step_change():
+    """
+    Positive Test: On synthetic data with an exact step (450 ppm empty / 800 ppm
+    occupied with 20 persons), the tuned threshold lies between the two levels and the
+    training MAE is zero.
+    """
+    x = np.array([450.0] * 30 + [800.0] * 30)
+    y = np.array([0.0] * 30 + [20.0] * 30)
+    rule = CO2ThresholdRule(tune=True).fit(x, y)
+    assert 450.0 <= rule.threshold_ppm_ < 800.0
+    assert rule.predict(x) == pytest.approx(y, abs=1e-12)
+
+
+def test_positive_grouped_permutation_importance_identifies_driver():
+    """
+    Positive Test: When y depends only on x0, shuffling the group {x0} raises RMSE
+    substantially while shuffling the irrelevant group {x1} changes it by ~0.
+    """
+    rng = np.random.default_rng(3)
+    X = rng.normal(size=(400, 2))
+    y = 5.0 * X[:, 0] + 40.0          # offset keeps y > 0 so clipping never alters predictions
+    model = LinearRegression().fit(X, y)
+    imp, base = grouped_permutation_importance(
+        model, X, y, ["x0", "x1"], {"driver": ["x0"], "noise": ["x1"]},
+        n_repeats=10, random_state=0)
+    table = imp.set_index("Feature_Group")["RMSE_increase_mean"]
+    assert base == pytest.approx(0.0, abs=1e-8)
+    assert table["driver"] > 1.0
+    assert table["noise"] == pytest.approx(0.0, abs=1e-8)
+
+
 # ==============================================================================
 # NEGATIVE TEST CASES
 # ==============================================================================
@@ -233,3 +323,49 @@ def test_negative_savgol_invalid_window():
     with pytest.raises(ValueError):
         compute_co2_derivative(c, dt_minutes=1.0, use_savgol=True,
                                window_length=3, polyorder=5)
+
+
+def test_negative_causal_derivative_invalid_inputs():
+    """
+    Negative Test: compute_causal_co2_derivative rejects dt <= 0, NaN/Inf, fewer than
+    3 samples, and invalid Savitzky-Golay settings.
+    """
+    ok = np.array([400.0, 410.0, 430.0, 450.0, 440.0, 435.0])
+    with pytest.raises(ValueError):
+        compute_causal_co2_derivative(ok, dt_minutes=0.0)
+    with pytest.raises(ValueError):
+        compute_causal_co2_derivative(np.array([400.0, np.nan, 420.0]), dt_minutes=10.0)
+    with pytest.raises(ValueError):
+        compute_causal_co2_derivative(np.array([400.0, 410.0]), dt_minutes=10.0)
+    with pytest.raises(ValueError):
+        compute_causal_co2_derivative(ok, dt_minutes=10.0, use_savgol=True,
+                                      window_length=4, polyorder=2)
+
+
+def test_negative_threshold_rule_rejects_nan_and_multicolumn_input():
+    """
+    Negative Test: CO2ThresholdRule raises ValueError on NaN CO2, on more than one
+    input column, and on a target whose length does not match.
+    """
+    with pytest.raises(ValueError):
+        CO2ThresholdRule().fit(np.array([[500.0], [np.nan]]), np.array([0.0, 1.0]))
+    with pytest.raises(ValueError):
+        CO2ThresholdRule().fit(np.ones((5, 2)), np.zeros(5))
+    with pytest.raises(ValueError):
+        CO2ThresholdRule().fit(np.array([[500.0], [600.0]]), np.array([0.0]))
+
+
+def test_negative_grouped_permutation_importance_invalid_arguments():
+    """
+    Negative Test: grouped_permutation_importance raises ValueError for an unknown
+    feature name, an empty group, and inconsistent shapes.
+    """
+    X = np.random.default_rng(0).normal(size=(20, 2))
+    y = X[:, 0]
+    model = LinearRegression().fit(X, y)
+    with pytest.raises(ValueError):
+        grouped_permutation_importance(model, X, y, ["a", "b"], {"g": ["not_a_feature"]})
+    with pytest.raises(ValueError):
+        grouped_permutation_importance(model, X, y, ["a", "b"], {"g": []})
+    with pytest.raises(ValueError):
+        grouped_permutation_importance(model, X, y[:-1], ["a", "b"], {"g": ["a"]})

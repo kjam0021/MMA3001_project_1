@@ -1042,7 +1042,8 @@ def run_pipeline(csv_path="Parsed_Data/synchronized_co2_occupancy_10min.csv", ou
         model.fit(X_tr, y_train)
         fit_ms = (timeit.default_timer() - t0) * 1000.0
 
-        # Peak Python-heap allocation during fit (separate run: tracemalloc slows execution)
+        # Peak Python/NumPy allocation during fit (separate run: tracemalloc slows execution).
+        # NOTE: C-level allocations (e.g. libsvm's kernel cache in SVR) are NOT traced.
         tracemalloc.start()
         clone(pipeline).fit(X_tr, y_train)
         _, peak_bytes = tracemalloc.get_traced_memory()
@@ -1166,7 +1167,8 @@ def run_pipeline(csv_path="Parsed_Data/synchronized_co2_occupancy_10min.csv", ou
     f_co2_only = ["co2_active", "co2_lag1", "co2_lag2", "dcdt_savgol"]
     feature_sets = {"Full (8 features)": f_multivar,
                     "No time-of-day": f_no_time,
-                    "CO2 physics only": f_co2_only}
+                    "CO2 physics only": f_co2_only,
+                    "Time of day only": time_cols}  # does CO2 add anything beyond the clock?
     ablation_rows = []
     for name in multivar_names:
         for fs_label, fs_cols in feature_sets.items():
@@ -1288,9 +1290,7 @@ def run_pipeline(csv_path="Parsed_Data/synchronized_co2_occupancy_10min.csv", ou
     perf_df.to_csv(os.path.join(results_dir, "performance_benchmark.csv"), index=False)
     md_sections.append(("Derivative benchmark (Python loop vs NumPy)", perf_df))
 
-    # --------------------------------------------------------------------------
-    # EXPORT: run metadata + ready-to-paste Markdown tables
-    # --------------------------------------------------------------------------
+  
     with open(os.path.join(results_dir, "run_metadata.txt"), "w") as fh:
         fh.write(f"python {platform.python_version()} | numpy {np.__version__} | pandas {pd.__version__} | "
                  f"scikit-learn {sklearn.__version__}\n")
