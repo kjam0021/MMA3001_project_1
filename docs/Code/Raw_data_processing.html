@@ -500,16 +500,20 @@ synchronizes both streams in Australia/Melbourne local time.</p>
 
             <div class="docstring"><p>Parses nested NEMo environmental sensor JSON strings into a flat DataFrame.</p>
 
-<h2 id="parameters">Parameters</h2>
+<h6 id="parameters">Parameters</h6>
 
-<p>json_series : pd.Series
-    Series of raw JSON strings from the <code>jsondata</code> column.</p>
+<ul>
+<li><strong>json_series</strong> (pd.Series):
+Series of raw JSON strings from the <code>jsondata</code> column.</li>
+</ul>
 
-<h2 id="returns">Returns</h2>
+<h6 id="returns">Returns</h6>
 
-<p>parsed_df : pd.DataFrame
-    Extracted columns: ['measurement_time', 'co2_ppm', 'co2_error',
-    'temp_c', 'humidity_rh', 'pressure_mb', 'tvoc_ug_m3'].</p>
+<ul>
+<li><strong>parsed_df</strong> (pd.DataFrame):
+Extracted columns: ['measurement_time', 'co2_ppm', 'co2_error',
+'temp_c', 'humidity_rh', 'pressure_mb', 'tvoc_ug_m3'].</li>
+</ul>
 </div>
 
 
