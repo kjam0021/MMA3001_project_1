@@ -280,12 +280,11 @@ A `DummyRegressor` is only a statistical floor; the credible engineering alterna
 
 | Model | Full (8 features) | No time-of-day (6) | CO2 physics only (4) | Time of day only (2) |
 | :--- | :---: | :---: | :---: | :---: |
-| Ridge | 3.435 (0.483) | 4.339 (0.175) | 4.710 (0.027) | `Passed` |
-| Decision Tree | 3.485 (0.467) | 4.381 (0.159) | 4.665 (0.046) | `Passed` |
-| SVR (RBF) | 3.114 (0.575) | 4.357 (0.168) | 5.025 (-0.107) | `Passed` |
-| MLP | 3.756 (0.382) | 4.387 (0.156) | 4.625 (0.062) | `Passed` |
+| Ridge | 3.435 (0.483) | 4.339 (0.175) | 4.710 (0.027) | 5.320 (−0.241) |
+| Decision Tree | 3.485 (0.467) | 4.381 (0.159) | 4.665 (0.046) | 5.337 (−0.249) |
+| SVR (RBF) | 3.114 (0.575) | 4.357 (0.168) | 5.025 (-0.107) | 	4.521 (0.104) |
+| MLP | 3.756 (0.382) | 4.387 (0.156) | 4.625 (0.062) | 5.317 (−0.239) |
 
-*The "Time of day only" column was added after the run above; re-run the pipeline and copy it from `results/time_feature_ablation.csv`.*
 
 **Interpretation.**
 1. **The model is not purely sensing CO2.** Time of day is the most influential group, and removing it degrades every model: test RMSE rises by `17%` (MLP) to `40%` (SVR) and test `R2` falls from `0.38-0.58` to `0.16-0.18`. A substantial part of the skill is the building schedule, so the model should not be expected to transfer to a room or term with a different timetable (consistent with Section 5.4).
