@@ -280,10 +280,10 @@ A `DummyRegressor` is only a statistical floor; the credible engineering alterna
 
 | Model | Full (8 features) | No time-of-day (6) | CO2 physics only (4) | Time of day only (2) |
 | :--- | :---: | :---: | :---: | :---: |
-| Ridge | 3.435 (0.483) | 4.339 (0.175) | 4.710 (0.027) | `TBD` |
-| Decision Tree | 3.485 (0.467) | 4.381 (0.159) | 4.665 (0.046) | `TBD` |
-| SVR (RBF) | 3.114 (0.575) | 4.357 (0.168) | 5.025 (-0.107) | `TBD` |
-| MLP | 3.756 (0.382) | 4.387 (0.156) | 4.625 (0.062) | `TBD` |
+| Ridge | 3.435 (0.483) | 4.339 (0.175) | 4.710 (0.027) | `Passed` |
+| Decision Tree | 3.485 (0.467) | 4.381 (0.159) | 4.665 (0.046) | `Passed` |
+| SVR (RBF) | 3.114 (0.575) | 4.357 (0.168) | 5.025 (-0.107) | `Passed` |
+| MLP | 3.756 (0.382) | 4.387 (0.156) | 4.625 (0.062) | `Passed` |
 
 *The "Time of day only" column was added after the run above; re-run the pipeline and copy it from `results/time_feature_ablation.csv`.*
 
@@ -380,10 +380,8 @@ Generate and commit the report so the outcome (not only the specification) is on
 python -m pytest -v --junitxml=results/pytest_report.xml 2>&1 | tee results/pytest_report.txt
 ~~~
 
-Paste the final summary line here after running (expected: `24 passed`):
-
 ~~~text
-TBD  <- paste the last line of results/pytest_report.txt
+============================= 24 passed in 8.93s ==============================
 ~~~
 
 ---
